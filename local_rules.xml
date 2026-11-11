@@ -1,0 +1,70 @@
+<!--
+  Custom detection rules for Home SOC Wazuh Lab
+  Location on the manager: /var/ossec/etc/rules/local_rules.xml
+  Custom rule IDs use the 100000+ range.
+
+  NOTE: replace ADMIN_WORKSTATION_IP below with your admin host's IP.
+  Do not commit real internal IP addresses.
+-->
+
+<!-- ============================================================
+     Tuning / allowlisting
+     ============================================================ -->
+<group name="local,pam,">
+  <rule id="100500" level="0">
+    <if_sid>5501,5502</if_sid>
+    <srcip>ADMIN_WORKSTATION_IP</srcip>
+    <description>Admin login from known workstation - suppressed</description>
+  </rule>
+</group>
+
+<!-- ============================================================
+     T1059.001 - PowerShell: command-line download cradle
+     Catches a download method on the process command line.
+     ============================================================ -->
+<group name="sysmon,attack,powershell,">
+  <rule id="100100" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\powershell\.exe|\\pwsh\.exe</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)DownloadString|DownloadFile|Invoke-WebRequest|iwr|wget|curl</field>
+    <field name="win.eventdata.commandLine" type="pcre2" negate="yes">(?i)\\AdminScripts\\</field>
+    <description>PowerShell download cradle detected</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+  </rule>
+</group>
+
+<!-- ============================================================
+     T1059.001 - PowerShell: in-memory (IEX) download cradle
+     Reads executed script-block content (Event 4104), so it
+     catches cradles that never appear on a command line.
+     Requires PowerShell Script Block Logging enabled.
+     ============================================================ -->
+<group name="powershell,attack,">
+  <rule id="100110" level="12">
+    <if_sid>91837</if_sid>
+    <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)DownloadString|DownloadFile|Invoke-WebRequest|Net\.WebClient|iwr</field>
+    <description>Suspicious PowerShell script block - in-memory download cradle</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+  </rule>
+</group>
+
+<!-- ============================================================
+     T1105 - Ingress Tool Transfer: certutil LOLBin download
+     Keys on certutil's download sub-commands to limit false
+     positives (urlcache / verifyctl), not on any URL.
+     ============================================================ -->
+<group name="sysmon,attack,lolbin,">
+  <rule id="100120" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\certutil\.exe</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)urlcache|verifyctl</field>
+    <description>Certutil LOLBin download detected</description>
+    <mitre>
+      <id>T1105</id>
+    </mitre>
+  </rule>
+</group>
