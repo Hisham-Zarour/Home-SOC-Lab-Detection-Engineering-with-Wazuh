@@ -114,7 +114,7 @@ Custom rules firing against live emulated attacks:
 
 **Certutil LOLBin download (rule 100120) — a gap the PowerShell rules missed:**
 
-![Certutil LOLBin download detected](Screenshots/100120-certutil-lolbin.png)
+![Certutil LOLBin download detected](100120-certutil-lolbin.png)
 
 **LSASS credential-dump attempt (rule 100150, level 13) — detected the attempt even though Windows prevented the dump:**
 
