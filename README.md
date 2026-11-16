@@ -1,19 +1,21 @@
 # Home SOC Lab — Detection Engineering with Wazuh
 
-A hands-on home Security Operations Center (SOC) built to practice **detection engineering** and **purple teaming**: deploy a SIEM, collect meaningful endpoint telemetry, write custom detections mapped to MITRE ATT&CK®, and validate them by emulating real attacker techniques — then find and close the gaps the tests expose.
+A hands-on home Security Operations Center (SOC) built to practice **detection engineering** and **purple teaming**: deploy a SIEM, collect meaningful endpoint telemetry, write custom detections mapped to MITRE ATT&CK®, and validate them by emulating real attacker techniques with Atomic Red Team — then find and close (or document) the gaps the tests expose.
+
+> **Status:** Core project complete — 10 ATT&CK techniques emulated and analysed, 11 custom rules written. This is an ongoing learning project; I plan to keep extending it (more techniques, Linux endpoint monitoring, chained attacks), though the timing of future work is open.
 
 ---
 
 ## Overview
 
-This project builds a working SIEM pipeline and uses it the way a real detection engineer does: not just "set it up," but **run attacks against it, see what the detections miss, understand *why*, and improve them.** Three attacker techniques were emulated with Atomic Red Team; each one taught a different detection lesson, and two of them exposed real gaps that were closed with new custom rules.
+This project doesn't stop at "set it up." It uses the SIEM the way a real detection engineer does: **run attacks against it, see what the detections miss, understand *why*, and improve them — or decide a rule isn't the right fix.** Ten attacker techniques were emulated; each produced a distinct, honest outcome, and together they cover the breadth of what a junior SOC analyst / detection engineer encounters.
 
 **Key outcomes**
 - Stood up a Wazuh SIEM with an enrolled Windows 11 endpoint.
-- Layered telemetry: Windows event logs → Sysmon process data → PowerShell Script Block Logging.
-- Wrote and deployed custom detection rules mapped to MITRE ATT&CK.
-- Validated detections through adversary emulation and **closed two detection gaps** discovered in the process.
-- Applied false-positive tuning (allowlisting known-good admin activity).
+- Layered telemetry: Windows event logs → Sysmon → PowerShell Script Block Logging → a tuned Sysmon registry/file/process config.
+- Wrote **11 custom detection rules** mapped to MITRE ATT&CK, including **severity tuning in both directions** and a **false-positive suppression**.
+- Validated detections through adversary emulation, **closing real gaps** and **documenting telemetry blind spots** that couldn't be closed with a rule alone.
+- Built the whole thing as a self-sufficient operator: SSH administration, a permanent static-IP fix, and systematic troubleshooting of a broken SIEM.
 
 ---
 
@@ -22,8 +24,8 @@ This project builds a working SIEM pipeline and uses it the way a real detection
 | Component | Role |
 |---|---|
 | **Wazuh Manager** (Linux VM) | SIEM — collects telemetry, evaluates rules, raises alerts, hosts the dashboard |
-| **Windows 11** (VM) | Monitored endpoint — runs the Wazuh agent + Sysmon |
-| **Attacker tooling** | Atomic Red Team (run locally on the endpoint to emulate techniques) |
+| **Windows 11** (VM) | Monitored endpoint — Wazuh agent + Sysmon + PowerShell logging |
+| **Atomic Red Team** | Adversary emulation framework, run on the endpoint to execute techniques |
 
 ```
                  +------------------------+
@@ -31,163 +33,140 @@ This project builds a working SIEM pipeline and uses it the way a real detection
                  |   rules + dashboard    |
                  +-----------^------------+
                              | agent traffic (1514/1515)
-                             |
                  +-----------+------------+
                  |   Windows 11 Endpoint  |
                  |   Wazuh Agent          |
-                 |   + Sysmon             |
+                 |   + Sysmon (tuned cfg) |
                  |   + PowerShell logging |
+                 |   + Atomic Red Team    |
                  +------------------------+
 ```
 
-> **Note:** Hosts run as isolated VMs. Real IP addresses/hostnames have been replaced with placeholders in this document — do not commit internal IPs, agent keys, or other secrets to a repository.
-
----
-
-## Build Summary
-
-1. **Deploy Wazuh Manager** from the official all-in-one OVA image.
-2. **Enroll the Windows agent** — registered with `agent-auth` pointing at the manager IP; configured the manager address in the agent's `ossec.conf`.
-3. **Install Sysmon** on the endpoint for rich process-creation telemetry (and more).
-4. **Enable PowerShell Script Block Logging** (records the *code PowerShell actually executes*, not just how it was launched).
-5. **Wire the channels into the agent** by adding `<localfile>` entries in `ossec.conf` for the Sysmon and PowerShell operational channels, then restarting the agent.
+> Hosts run as isolated VMs. Internal IPs/hostnames are placeholders in this document — real IPs, agent keys, and other secrets are not committed to the repo.
 
 ---
 
 ## Telemetry Sources
 
-Detection is only as good as the data collected, so telemetry was added in layers — each one unlocking visibility the previous layer lacked.
+Detection is only as good as the data collected, so telemetry was added in **layers** — each unlocking visibility the previous one lacked. This layering turned out to be a central theme (see *Key Lessons*).
 
 | Source | Example Event IDs | What it reveals |
 |---|---|---|
-| Windows Security log | 4624 / 4625 | Successful / failed logons |
-| **Sysmon** | 1 (process create), 13 (registry) | Programs launched, full command lines, parent process |
-| **PowerShell Script Block Logging** | 4104 | The actual script content executed — including in-memory code |
+| Windows Security log | 4624 / 4625 / 1102 | Logons, failed logons, log clearing |
+| **Sysmon — process** | 1 | Programs launched, full command lines, parent process |
+| **Sysmon — registry** | 13 | Registry value writes (**selective** — curated keys only) |
+| **Sysmon — file / process access** | 11 / 10 | File drops; one process opening a handle to another |
+| **PowerShell Script Block Logging** | 4104 | The actual code PowerShell executes, including in-memory |
+
+The Sysmon telemetry was upgraded mid-project from a minimal (process-only) config to the community **SwiftOnSecurity** config, which enabled registry/file/process-access events — a decisive moment (technique T1547.001).
+
+---
+
+## Adversary Emulation — Technique Matrix
+
+Each technique was run with Atomic Red Team, then investigated with the loop: **run → did a detection fire? → why / why not? → improve, or decide no rule is warranted.** Outcomes are deliberately varied and honest.
+
+| # | Technique (ATT&CK) | Test | Outcome |
+|---|---|---|---|
+| 1 | T1059.003 — Windows Command Shell | cmd execution | Caught by **built-in** rules (92032/92052). Lesson: separate **harness noise** from the real technique. |
+| 2 | T1105 — Ingress Tool Transfer | certutil download | **Gap → wrote rule 100120.** PowerShell rules were blind to a `certutil` LOLBin. |
+| 3 | T1033 — System Owner/User Discovery | whoami /all | **Deliberately no dedicated rule.** Recon is too common; detect via context/correlation, not single events. |
+| 4 | T1547.001 — Registry Run Keys | Reg Key Run | **Built-in covered it (92302).** The real gap was **missing telemetry** — Sysmon registry logging was off → enabled it. Wrote 100130 (redundant, documented). |
+| 5 | T1053.005 — Scheduled Task | schtasks local | **Gap → wrote rule 100140.** |
+| 6 | T1003.001 — LSASS Memory | comsvcs.dll dump | **Prevented** by Windows LSASS protection (no dump produced). **Detected the *attempt*** → wrote rule 100150 (level 13). |
+| 7 | T1070.001 — Clear Windows Event Logs | wevtutil cl Security | **Built-in covered it (63103)**, but under-weighted → **escalated** via rule 100160. Emulated **manually** (atomic missing from local copy). |
+| 8 | T1218 — System Binary Proxy Execution | Wlrmdr LOLBin | **Telemetry blind spot** — attack succeeded (calc launched) but `wlrmdr` wasn't logged. Also surfaced a **false positive** (92213) → suppressed via rule 100170. Detection logic written (100180) pending telemetry. |
+| 9 | T1112 — Modify Registry (×4 tests) | exec policy / Defender / RDP / UAC | **One watchlist rule (100190)** caught 3 techniques. **Prevention** (Defender tamper blocked) + **attempt-detection** (exec policy overridden by GP). |
+
+*(T1087 Account Discovery was intentionally skipped — same lesson as T1033.)*
 
 ---
 
 ## Custom Detection Rules
 
-All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs in the 100000+ custom range).
+All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs 100000+). The full file is in [`rules/local_rules.xml`](rules/local_rules.xml). Summary:
 
-### Rule 100100 — PowerShell download cradle (command line) — `T1059.001`
-Detects a PowerShell process launched with a download method on its **command line**, excluding an approved scripts path.
+| Rule | Level | What it detects | ATT&CK |
+|---|---|---|---|
+| 100100 | 12 | PowerShell download cradle on the **command line** | T1059.001 |
+| 100110 | 12 | PowerShell download cradle **in memory** (`IEX`, via script-block logging) | T1059.001 |
+| 100120 | 12 | `certutil` LOLBin download (`urlcache`/`verifyctl`) | T1105 |
+| 100130 | 12 | Run-key persistence via `reg.exe` *(redundant with built-in 92302 — documented)* | T1547.001 |
+| 100140 | 12 | Scheduled task created via `schtasks /create` | T1053.005 |
+| 100150 | 13 | LSASS dump attempt (`comsvcs.dll` + `MiniDump`) | T1003.001 |
+| 100180 | 12 | `wlrmdr` LOLBin *(logic ready; pending telemetry — documented blind spot)* | T1218 |
+| 100190 | 12 | Security-sensitive registry modification — **watchlist** (exec policy / Defender / RDP / UAC) | T1112 |
+| **100500** | **0** | **Tuning (down):** suppress routine admin logins from a known workstation | — |
+| **100160** | **12** | **Tuning (up):** escalate "Security log cleared" (built-in 63103 is under-weighted) | T1070.001 |
+| **100170** | **0** | **Tuning (FP):** suppress false positive on benign `__PSScriptPolicyTest` files | — |
 
-```xml
-<rule id="100100" level="12">
-  <if_group>sysmon_event1</if_group>
-  <field name="win.eventdata.image" type="pcre2">(?i)\\powershell\.exe|\\pwsh\.exe</field>
-  <field name="win.eventdata.commandLine" type="pcre2">(?i)DownloadString|DownloadFile|Invoke-WebRequest|iwr|wget|curl</field>
-  <field name="win.eventdata.commandLine" type="pcre2" negate="yes">(?i)\\AdminScripts\\</field>
-  <description>PowerShell download cradle detected</description>
-  <mitre><id>T1059.001</id></mitre>
-</rule>
-```
+### Two detections worth highlighting
 
-### Rule 100110 — PowerShell in-memory cradle (script block) — `T1059.001`
-Detects a download cradle run **in memory** (via `IEX`), which rule 100100 cannot see because it never appears on a command line. Reads the executed script-block content instead.
+**Command-line vs. in-memory (100100 / 100110).** The same download cradle is caught two ways: `100100` reads the process **command line**, `100110` reads the **executed script block** (Event 4104). This matters because an attacker running the cradle in memory via `IEX` leaves *nothing* on a command line — a blind spot that only script-block logging closes.
 
-```xml
-<rule id="100110" level="12">
-  <if_sid>91837</if_sid>
-  <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)DownloadString|DownloadFile|Invoke-WebRequest|Net\.WebClient|iwr</field>
-  <description>Suspicious PowerShell script block - in-memory download cradle</description>
-  <mitre><id>T1059.001</id></mitre>
-</rule>
-```
-
-### Rule 100120 — certutil LOLBin download — `T1105`
-Detects `certutil.exe` (a legitimate certificate tool) being abused to download files. Keys on the download sub-commands (`urlcache` / `verifyctl`) rather than any URL, to reduce false positives.
-
-```xml
-<rule id="100120" level="12">
-  <if_group>sysmon_event1</if_group>
-  <field name="win.eventdata.image" type="pcre2">(?i)\\certutil\.exe</field>
-  <field name="win.eventdata.commandLine" type="pcre2">(?i)urlcache|verifyctl</field>
-  <description>Certutil LOLBin download detected</description>
-  <mitre><id>T1105</id></mitre>
-</rule>
-```
-
-### Rule 100500 — Tuning: suppress known-good admin logins
-Lowers routine SSH logins from the admin workstation to level 0 (recorded, not alerted) while still alerting on logins from **any other** source.
-
-```xml
-<rule id="100500" level="0">
-  <if_sid>5501,5502</if_sid>
-  <srcip>ADMIN_WORKSTATION_IP</srcip>
-  <description>Admin login from known workstation - suppressed</description>
-</rule>
-```
-
----
-
-## Adversary Emulation & Findings
-
-Each technique was run with Atomic Red Team, then investigated in Wazuh using the loop: **run → did a detection fire? → why / why not? → improve → re-test.**
-
-### 1. T1059.001 — PowerShell Download Cradle  →  *gap found & closed*
-
-- **Ran:** a download cradle that pulls a script and executes it in memory (`IEX (New-Object Net.WebClient).DownloadString(...)`).
-- **Finding:** command-line rule **100100 did not fire.**
-- **Root cause:** the cradle ran **in memory via `IEX`** inside an existing PowerShell session — no new process was created with the payload on its command line, so process-creation telemetry had nothing to match. (A directly-launched `powershell.exe -Command "...DownloadString..."` *was* caught, confirming the rule works — the difference is purely *how* the code was delivered.)
-- **Fix:** enabled **Script Block Logging** and added rule **100110**, which reads the executed script content. The same attack was then detected.
-- **Lesson:** command-line detection is blind to in-memory execution. This is a deliberate attacker evasion, and it requires a different telemetry source to catch.
-
-### 2. T1105 — Ingress Tool Transfer (certutil)  →  *gap found & closed*
-
-- **Ran:** `certutil -urlcache -split -f <url> <outfile>` — downloading a file with a trusted Windows binary.
-- **Finding:** rules 100100/100110 **missed it entirely** — they only watch PowerShell, and this was `certutil`.
-- **Fix:** added rule **100120** to detect certutil being used as a downloader (a "LOLBin" — Living Off the Land Binary).
-- **Lesson:** attackers abuse trusted, pre-installed tools to avoid bringing malware. Detection means spotting **trusted tools doing untrusted things**, not just watching for known-bad programs.
-
-### 3. T1033 — System Owner/User Discovery  →  *deliberate "no dedicated rule" decision*
-
-- **Ran:** `whoami /all` (reconnaissance).
-- **Finding:** the activity was **logged** (visible in Sysmon Event 1) but produced no recon-specific alert — only generic "abnormal cmd parent" alerts fired, reacting to *how* it launched, not *what* it did.
-- **Decision:** **not** to write a dedicated single-event rule. `whoami` is extremely common; alerting on every instance would bury real signal in noise.
-- **Lesson:** not every attacker action warrants a signature. Recon is better caught through **context** (unusual parent/account) or **correlation** (a *burst* of discovery commands in seconds). Knowing when *not* to add a rule is itself a detection-engineering skill.
+**Watchlist pattern (100190).** Rather than write one rule per registry key (T1112 has ~90 tests), a single rule matches a *watchlist* of security-sensitive indicators (`ExecutionPolicy Bypass`, `DisableAntiSpyware`, `fDenyTSConnections`, `LocalAccountTokenFilterPolicy`, …) — one maintainable rule that caught three different techniques in testing.
 
 ---
 
 ## Key Lessons
 
-- **Telemetry is the foundation.** Each layer (logons → process data → script-block content) unlocked detections the previous layer couldn't support.
-- **Where you detect matters.** Command-line vs. in-memory execution are different detection surfaces; covering a technique from multiple angles is more robust than one rule.
-- **LOLBins are a core modern problem.** Trusted binaries (`certutil`, and others like `bitsadmin`, `rundll32`, `mshta`) are abused precisely because they look normal.
-- **More rules ≠ better.** Noisy detections erode trust; tuning and correlation are as important as writing new rules.
-- **Validate everything.** Emulation proves a detection works (or doesn't), and a suppression rule should be re-tested to confirm it actually suppresses.
+1. **You can't detect what you don't collect — and "collecting" is a curated, never-complete decision.** This emerged three times: registry logging was *off* (T1547.001), process logging *filters* some binaries (T1218/wlrmdr), and registry logging is *selective* about which keys it watches (T1112). Detection has two levers — **telemetry** (what you collect) and **rules** (what you match) — and sometimes the fix is the first, not the second.
+2. **Where you detect matters.** Command-line vs. in-memory execution are different surfaces; covering a technique from multiple angles beats one rule.
+3. **Not every technique needs a new rule.** Some are already covered by built-ins (Run keys, log clearing) — *checking first* is a skill. Some (recon) are better left to context/correlation than a noisy single-event rule.
+4. **Detection isn't the only defense.** Windows *prevented* two attacks outright (LSASS dump, Defender tamper) — but you still want to alert on the *attempt*. And "the test exited 0" ≠ "the attack succeeded" — always verify the actual outcome.
+5. **Tuning goes both ways.** Suppress routine noise (admin logins, benign `__PSScriptPolicyTest` files) *and* escalate under-weighted critical signals (log clearing). A noisy or mis-weighted detection is as much a problem as a missing one.
+
+---
+
+## Lab Engineering & Troubleshooting
+
+Beyond detection, this project involved standing up, operating, and repairing the environment — the operational skills behind the detections:
+
+- **Remote administration over SSH** — managed the Linux SIEM from a Windows workstation (proper remote admin instead of the VM console).
+- **Permanent static-IP fix** — diagnosed that the server was booting IPv6-only (no IPv4 DHCP lease), traced it through `systemd-networkd`, and rewrote `20-eth0.network` to a static config — ending a recurring connectivity problem for good.
+- **Telemetry engineering** — upgraded Sysmon to the SwiftOnSecurity config (unlocking registry/file/process-access events) and enabled PowerShell Script Block Logging.
+- **Workflow optimization** — Guest Additions for host↔VM clipboard; a PowerShell profile to auto-load the Atomic Red Team module every session.
+- **SIEM troubleshooting** — recovered a non-starting Wazuh manager multiple times by reading `ossec.log`, identifying XML ruleset errors (nested groups, a leaked shell heredoc marker, unwrapped rules), and fixing them; diagnosed a `modulesd` stale-PID issue after reboots.
+- **Snapshot discipline** — learned that a restore discards all later changes, and adopted "snapshot the fully-configured state" as the baseline.
 
 ---
 
 ## Skills Demonstrated
 
-SIEM deployment and administration (Wazuh) · agent enrollment · endpoint telemetry (Sysmon, PowerShell Script Block Logging) · custom detection rule authoring · MITRE ATT&CK mapping · adversary emulation (Atomic Red Team) · purple-team workflow · false-positive tuning / allowlisting · log analysis and triage · Linux server administration and troubleshooting.
+SIEM deployment & administration (Wazuh) · agent enrollment · endpoint telemetry engineering (Sysmon, PowerShell Script Block Logging) · custom detection-rule authoring · false-positive and severity tuning · MITRE ATT&CK mapping · adversary emulation (Atomic Red Team) · purple-team workflow · log analysis & triage · Linux system administration & networking (systemd-networkd, SSH) · systematic troubleshooting.
 
 ---
 
 ## MITRE ATT&CK Coverage
 
-| Technique | Name | Rule(s) |
+| Technique | Name | Rule(s) / Outcome |
 |---|---|---|
-| T1059.001 | Command and Scripting Interpreter: PowerShell | 100100, 100110 |
+| T1059.001 | Command & Scripting Interpreter: PowerShell | 100100, 100110 |
+| T1059.003 | Windows Command Shell | built-in (92032/92052) |
 | T1105 | Ingress Tool Transfer | 100120 |
-| T1033 | System Owner/User Discovery | (context/correlation — no dedicated rule by design) |
+| T1033 | System Owner/User Discovery | context/correlation (no dedicated rule, by design) |
+| T1547.001 | Boot/Logon Autostart: Registry Run Keys | built-in 92302; 100130; telemetry enabled |
+| T1053.005 | Scheduled Task | 100140 |
+| T1003.001 | OS Credential Dumping: LSASS Memory | 100150 (attempt); prevented by OS |
+| T1070.001 | Indicator Removal: Clear Windows Event Logs | built-in 63103; escalated via 100160 |
+| T1218 | System Binary Proxy Execution | 100180 (pending telemetry); documented blind spot |
+| T1112 | Modify Registry | 100190 (watchlist) |
 
 ---
 
 ## Future Work
 
-- **Linux endpoint monitoring** (auditd / Sysmon for Linux) — a monitored Linux box, not just the SIEM server.
-- **Broader ATT&CK coverage** — persistence (Run keys, scheduled tasks), credential access (LSASS), defense evasion (log clearing, registry tampering), and other LOLBins.
-- **Correlation rules** — e.g., alert on a *burst* of discovery commands rather than single events.
-- **Chained attacks from a separate attacker host (Kali)** — full kill-chain emulation (recon → payload → C2 → post-exploitation) for more realistic, end-to-end detection practice.
+This project is ongoing — I intend to keep building on it (timing open):
+- **Linux endpoint monitoring** (auditd / Sysmon for Linux) — a *monitored* Linux host, not just the SIEM server.
+- **Closing the documented telemetry blind spots** — expanding Sysmon registry/process coverage so techniques like wlrmdr and un-watched registry keys become visible.
+- **Correlation rules** — e.g., alerting on a *burst* of discovery commands rather than single events.
+- **Chained attacks from a separate attacker host (Kali)** — full kill-chain emulation (recon → payload → C2 → post-exploitation) for end-to-end detection practice.
 
 ---
 
 ## A Note on Approach
 
-This project was built as a hands-on learning exercise, using an AI assistant as a tutor and pair-debugger. I used it to learn *by doing* — not to have the work done for me. I made (and caught) real mistakes along the way: XML typos that stopped the manager from starting, a snapshot restore that wiped my setup, a custom rule that didn't fire because of rule precedence, and a false-positive risk in my certutil rule that I spotted and tightened myself. At each step I focused on understanding *why* something worked, not just *what* to type — and I can explain every rule and design decision in this repo. The goal was to build real detection-engineering intuition, and the troubleshooting was part of the learning, not a detour around it.
+This project was built as a hands-on learning exercise, using an AI assistant as a tutor and pair-debugger. I used it to learn *by doing* — not to have the work done for me. I made (and caught) real mistakes along the way: XML typos that stopped the manager from starting, a snapshot restore that wiped my setup, rules that didn't fire because of rule precedence, false-positive and telemetry-coverage issues I spotted and worked through myself, and a recurring network problem I traced to its root cause. At each step I focused on understanding *why* something worked, not just *what* to type — and I can explain every rule, finding, and design decision in this repo. The troubleshooting was part of the learning, not a detour around it.
 
 ---
 
