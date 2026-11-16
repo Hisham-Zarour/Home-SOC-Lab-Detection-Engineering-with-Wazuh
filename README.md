@@ -114,19 +114,19 @@ Custom rules firing against live emulated attacks:
 
 **Certutil LOLBin download (rule 100120) — a gap the PowerShell rules missed:**
 
-![Certutil LOLBin download detected](screenshots/100120-certutil-lolbin.png)
+![Certutil LOLBin download detected](Screenshots/100120-certutil-lolbin.png)
 
 **LSASS credential-dump attempt (rule 100150, level 13) — detected the attempt even though Windows prevented the dump:**
 
-![LSASS dump attempt detected](screenshots/100150-lsass-attempt.png)
+![LSASS dump attempt detected](Screenshots/100150-lsass-attempt.png)
 
 **Security log cleared — severity tuned up from the built-in's level 5 to level 12 (rule 100160):**
 
-![Security log cleared - escalated](screenshots/100160-logclear-escalated.png)
+![Security log cleared - escalated](Screenshots/100160-logclear-escalated.png)
 
 **One watchlist rule (100190) catching multiple T1112 registry-modification techniques:**
 
-![T1112 watchlist catching multiple techniques](screenshots/100190-t1112-watchlist.png)
+![T1112 watchlist catching multiple techniques](Screenshots/100190-t1112-watchlist.png)
 
 ---
 
