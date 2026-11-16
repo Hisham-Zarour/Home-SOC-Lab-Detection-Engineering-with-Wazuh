@@ -1,15 +1,13 @@
 <!--
-  Custom detection rules for Home SOC Wazuh Lab
+  Custom detection rules - Home SOC Wazuh Lab
   Location on the manager: /var/ossec/etc/rules/local_rules.xml
   Custom rule IDs use the 100000+ range.
 
-  NOTE: replace ADMIN_WORKSTATION_IP below with your admin host's IP.
+  NOTE: replace ADMIN_WORKSTATION_IP with your admin host's IP.
   Do not commit real internal IP addresses.
 -->
 
-<!-- ============================================================
-     Tuning / allowlisting
-     ============================================================ -->
+<!-- ===== Tuning: suppress routine admin logins (severity down) ===== -->
 <group name="local,pam,">
   <rule id="100500" level="0">
     <if_sid>5501,5502</if_sid>
@@ -18,10 +16,7 @@
   </rule>
 </group>
 
-<!-- ============================================================
-     T1059.001 - PowerShell: command-line download cradle
-     Catches a download method on the process command line.
-     ============================================================ -->
+<!-- ===== T1059.001 - PowerShell download cradle (command line) ===== -->
 <group name="sysmon,attack,powershell,">
   <rule id="100100" level="12">
     <if_group>sysmon_event1</if_group>
@@ -29,42 +24,92 @@
     <field name="win.eventdata.commandLine" type="pcre2">(?i)DownloadString|DownloadFile|Invoke-WebRequest|iwr|wget|curl</field>
     <field name="win.eventdata.commandLine" type="pcre2" negate="yes">(?i)\\AdminScripts\\</field>
     <description>PowerShell download cradle detected</description>
-    <mitre>
-      <id>T1059.001</id>
-    </mitre>
+    <mitre><id>T1059.001</id></mitre>
   </rule>
 </group>
 
-<!-- ============================================================
-     T1059.001 - PowerShell: in-memory (IEX) download cradle
-     Reads executed script-block content (Event 4104), so it
-     catches cradles that never appear on a command line.
-     Requires PowerShell Script Block Logging enabled.
-     ============================================================ -->
+<!-- ===== T1059.001 - PowerShell download cradle (in-memory / script block) ===== -->
 <group name="powershell,attack,">
   <rule id="100110" level="12">
     <if_sid>91837</if_sid>
     <field name="win.eventdata.scriptBlockText" type="pcre2">(?i)DownloadString|DownloadFile|Invoke-WebRequest|Net\.WebClient|iwr</field>
     <description>Suspicious PowerShell script block - in-memory download cradle</description>
-    <mitre>
-      <id>T1059.001</id>
-    </mitre>
+    <mitre><id>T1059.001</id></mitre>
   </rule>
 </group>
 
-<!-- ============================================================
-     T1105 - Ingress Tool Transfer: certutil LOLBin download
-     Keys on certutil's download sub-commands to limit false
-     positives (urlcache / verifyctl), not on any URL.
-     ============================================================ -->
+<!-- ===== T1105 (certutil) + T1218 (wlrmdr) - LOLBins ===== -->
 <group name="sysmon,attack,lolbin,">
   <rule id="100120" level="12">
     <if_group>sysmon_event1</if_group>
     <field name="win.eventdata.image" type="pcre2">(?i)\\certutil\.exe</field>
     <field name="win.eventdata.commandLine" type="pcre2">(?i)urlcache|verifyctl</field>
     <description>Certutil LOLBin download detected</description>
-    <mitre>
-      <id>T1105</id>
-    </mitre>
+    <mitre><id>T1105</id></mitre>
+  </rule>
+
+  <!-- wlrmdr not logged by current Sysmon config = telemetry blind spot (T1218 Test 16).
+       Logic is correct; will not fire until wlrmdr process creation is logged. -->
+  <rule id="100180" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\wlrmdr\.exe</field>
+    <description>Wlrmdr LOLBin proxy execution (T1218) - pending telemetry</description>
+    <mitre><id>T1218</id></mitre>
+  </rule>
+</group>
+
+<!-- ===== Persistence - T1547.001 (Run key) + T1053.005 (scheduled task) ===== -->
+<group name="sysmon,attack,persistence,">
+  <rule id="100130" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\reg\.exe</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)ADD</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)\\CurrentVersion\\Run</field>
+    <description>Registry Run key persistence via reg.exe (redundant with built-in 92302)</description>
+    <mitre><id>T1547.001</id></mitre>
+  </rule>
+
+  <rule id="100140" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\schtasks\.exe</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)/create</field>
+    <description>Scheduled task created via schtasks.exe (possible persistence)</description>
+    <mitre><id>T1053.005</id></mitre>
+  </rule>
+</group>
+
+<!-- ===== T1003.001 - LSASS credential dump ===== -->
+<group name="sysmon,attack,credaccess,">
+  <rule id="100150" level="13">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)comsvcs\.dll</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)MiniDump</field>
+    <description>Possible LSASS credential dump attempt via comsvcs.dll MiniDump</description>
+    <mitre><id>T1003.001</id></mitre>
+  </rule>
+</group>
+
+<!-- ===== T1112 - Modify Registry (watchlist of security-sensitive keys) ===== -->
+<group name="sysmon,attack,defense_evasion,">
+  <rule id="100190" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)ExecutionPolicy\s+Bypass|ExecutionPolicy\s+Unrestricted|DisableAntiSpyware|DisableRealtimeMonitoring|fDenyTSConnections|LocalAccountTokenFilterPolicy</field>
+    <description>Security-sensitive registry modification (T1112 watchlist)</description>
+    <mitre><id>T1112</id></mitre>
+  </rule>
+</group>
+
+<!-- ===== Tuning: escalate log clearing (up) + suppress PSScriptPolicyTest FP ===== -->
+<group name="windows,attack,tuning,">
+  <rule id="100160" level="12">
+    <if_sid>63103</if_sid>
+    <description>Security event log cleared - possible anti-forensics (escalated)</description>
+    <mitre><id>T1070.001</id></mitre>
+  </rule>
+
+  <rule id="100170" level="0">
+    <if_sid>92213</if_sid>
+    <field name="win.eventdata.targetFilename" type="pcre2">(?i)__PSScriptPolicyTest</field>
+    <description>Benign PowerShell execution-policy test file - false positive suppressed</description>
   </rule>
 </group>
