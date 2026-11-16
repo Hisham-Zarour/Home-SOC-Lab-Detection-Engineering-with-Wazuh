@@ -84,7 +84,7 @@ Each technique was run with Atomic Red Team, then investigated with the loop: **
 
 ## Custom Detection Rules
 
-All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs 100000+). The full file is in [`rules/local_rules.xml`](rules/local_rules.xml). Summary:
+All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs 100000+). The full file is in [`rules/local_rules.xml`](local_rules.xml). Summary:
 
 | Rule | Level | What it detects | ATT&CK |
 |---|---|---|---|
