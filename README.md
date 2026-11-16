@@ -108,6 +108,28 @@ All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (
 
 ---
 
+## Detections in Action
+
+Custom rules firing against live emulated attacks:
+
+**Certutil LOLBin download (rule 100120) — a gap the PowerShell rules missed:**
+
+![Certutil LOLBin download detected](screenshots/100120-certutil-lolbin.png)
+
+**LSASS credential-dump attempt (rule 100150, level 13) — detected the attempt even though Windows prevented the dump:**
+
+![LSASS dump attempt detected](screenshots/100150-lsass-attempt.png)
+
+**Security log cleared — severity tuned up from the built-in's level 5 to level 12 (rule 100160):**
+
+![Security log cleared - escalated](screenshots/100160-logclear-escalated.png)
+
+**One watchlist rule (100190) catching multiple T1112 registry-modification techniques:**
+
+![T1112 watchlist catching multiple techniques](screenshots/100190-t1112-watchlist.png)
+
+---
+
 ## Key Lessons
 
 1. **You can't detect what you don't collect — and "collecting" is a curated, never-complete decision.** This emerged three times: registry logging was *off* (T1547.001), process logging *filters* some binaries (T1218/wlrmdr), and registry logging is *selective* about which keys it watches (T1112). Detection has two levers — **telemetry** (what you collect) and **rules** (what you match) — and sometimes the fix is the first, not the second.
