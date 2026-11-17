@@ -84,7 +84,7 @@ Each technique was run with Atomic Red Team, then investigated with the loop: **
 
 ## Custom Detection Rules
 
-All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs 100000+). The full file is in [`rules/local_rules.xml`](local_rules.xml). Summary:
+All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (IDs 100000+). The full file is in [`rules/local_rules.xml`](rules/local_rules.xml). Summary:
 
 | Rule | Level | What it detects | ATT&CK |
 |---|---|---|---|
@@ -105,6 +105,25 @@ All custom rules live in `/var/ossec/etc/rules/local_rules.xml` on the manager (
 **Command-line vs. in-memory (100100 / 100110).** The same download cradle is caught two ways: `100100` reads the process **command line**, `100110` reads the **executed script block** (Event 4104). This matters because an attacker running the cradle in memory via `IEX` leaves *nothing* on a command line — a blind spot that only script-block logging closes.
 
 **Watchlist pattern (100190).** Rather than write one rule per registry key (T1112 has ~90 tests), a single rule matches a *watchlist* of security-sensitive indicators (`ExecutionPolicy Bypass`, `DisableAntiSpyware`, `fDenyTSConnections`, `LocalAccountTokenFilterPolicy`, …) — one maintainable rule that caught three different techniques in testing.
+
+---
+
+## Rule Limitations & Known Evasions
+
+No single-event rule is complete — if you can't describe how to defeat your own detection, you probably haven't thought about it hard enough. Each custom rule is paired below with the most realistic way an attacker would slip past it. Several of these gaps are *why* companion rules exist (100100 → 100110); the rest are honest, documented limitations rather than claims of full coverage.
+
+| Rule | Most realistic evasion / limitation |
+|---|---|
+| 100100 — PS cradle (cmdline) | Run the cradle **in memory via `IEX`** (nothing on the command line) — covered by 100110 — or obfuscate the method names (`-enc` base64, string concatenation). |
+| 100110 — PS cradle (script block) | Matches a fixed keyword list; a **custom download function** or an **AMSI / script-block-logging bypass** that suppresses Event 4104 evades it. |
+| 100120 — certutil LOLBin | Keys on the `certutil.exe` image name — **rename the binary**, or use a **different download LOLBin** (`bitsadmin`, `curl.exe`, `mshta`) not on the list. |
+| 100130 — reg.exe Run key | Write the Run key via **PowerShell / direct API** instead of `reg.exe`, or use a **different autostart** location (Winlogon, services). |
+| 100140 — schtasks | Register the task via the **`Register-ScheduledTask` / Schedule-service COM API** instead of `schtasks.exe`. |
+| 100150 — LSASS dump | Keys on the `comsvcs.dll` MiniDump method — use **direct syscalls**, a **custom dumper**, or any path that never touches `comsvcs.dll`. |
+| 100180 — wlrmdr | Can't fire until the process is logged (**telemetry gap**); also keys on the image name, so a **renamed binary** evades. |
+| 100190 — T1112 watchlist | Modify a **sensitive key not on the watchlist**, or set the value through an API that never exposes the indicator on a command line. |
+| 100160 — log-clear (escalate) | Detects anti-forensics **after the fact**, not prevention; disabling logging *first*, or clearing by non-standard means, avoids the triggering event. |
+| 100500 / 100170 — suppressions | The inverse risk of tuning: an attacker operating **from the allowlisted admin IP** (100500), or dropping a file **named like `__PSScriptPolicyTest`** (100170), would ride the suppression. The cost of every allowlist. |
 
 ---
 
@@ -168,6 +187,16 @@ I ran `wlrmdr.exe` (T1218, System Binary Proxy Execution), a signed Windows bina
 
 ---
 
+## False Positives & Noise
+
+A rule is only as useful as its signal-to-noise ratio, so I tracked what fired that *wasn't* the technique under test.
+
+- **The most surprising noise:** built-in alert **92213** ("Executable file dropped in a folder commonly used by malware") fired **high-severity on a completely benign file** — the `__PSScriptPolicyTest` temp file that PowerShell itself writes every time it checks execution policy. It appeared on routine PowerShell activity, not an attack, and was the single most unexpected source of noise in the lab. Tuned out with suppression rule **100170**.
+- **Harness noise:** Atomic Red Team's own wrapper (PowerShell spawning PowerShell, environment-variable queries → alerts 91816 / 91822 / 92027) raised unrelated alerts around nearly every test. Learning to separate *harness noise* from the *real technique* became a recurring discipline (see technique #1 in the matrix).
+- **An honest limit on the numbers:** testing used discrete, triggered Atomic tests, not sustained "normal user" background activity — so this lab does **not** claim a measured false-positive *rate*. Quantifying that (running the ruleset against days of normal activity and counting non-attack alerts per rule) is the correct next step, and is listed in *Future Work*.
+
+---
+
 ## Key Lessons
 
 1. **You can't detect what you don't collect — and "collecting" is a curated, never-complete decision.** This emerged three times: registry logging was *off* (T1547.001), process logging *filters* some binaries (T1218/wlrmdr), and registry logging is *selective* about which keys it watches (T1112). Detection has two levers — **telemetry** (what you collect) and **rules** (what you match) — and sometimes the fix is the first, not the second.
@@ -220,6 +249,7 @@ This project is ongoing — I intend to keep building on it (timing open):
 - **Linux endpoint monitoring** (auditd / Sysmon for Linux) — a *monitored* Linux host, not just the SIEM server.
 - **Closing the documented telemetry blind spots** — expanding Sysmon registry/process coverage so techniques like wlrmdr and un-watched registry keys become visible.
 - **Correlation rules** — e.g., alerting on a *burst* of discovery commands rather than single events.
+- **Baseline false-positive measurement** — run the ruleset against sustained normal lab activity to quantify a false-positive rate per rule, rather than relying on one-off test runs.
 - **Chained attacks from a separate attacker host (Kali)** — full kill-chain emulation (recon → payload → C2 → post-exploitation) for end-to-end detection practice.
 
 ---
